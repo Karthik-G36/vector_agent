@@ -9,3 +9,9 @@ numpy>=1.26.0
 pycairo>=1.26.0
 cairosvg>=2.7.1
 python-dotenv>=1.0.0
+
+# Optional system dependency (not a Python package):
+#   Inkscape >= 1.2  — install via https://inkscape.org/release/
+#   When present, vectorize_advanced.py uses it as the primary SVG→EPS
+#   backend (PostScript Level 3 with true gradient shfill rendering).
+#   Without it, the pipeline falls back to cairosvg then the built-in parser.

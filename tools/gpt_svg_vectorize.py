@@ -26,7 +26,9 @@ except ImportError:
 try:
     import cairosvg
     CAIROSVG_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
+    # OSError is raised on Windows when libcairo-2.dll is absent even though
+    # the cairosvg Python package is installed.
     cairosvg = None
     CAIROSVG_AVAILABLE = False
 
@@ -39,26 +41,85 @@ SVG_NS = "http://www.w3.org/2000/svg"
 # ---------------------------------------------------------------------------
 
 SVG_PROMPT = """\
-You are a professional SVG vectorization expert. Analyze this logo image with precision \
-and generate complete, production-ready SVG code that perfectly recreates it for print.
+You are a professional SVG vectorisation expert producing print-ready artwork.
+Analyse this logo image with absolute precision and generate complete SVG code
+that faithfully recreates every visible detail — including all 3D depth cues,
+gradients, shadows, glows, and bevel highlights.
 
-CRITICAL REQUIREMENTS:
-1. Capture EVERY visible element — all text (including small subtitles), shapes, icons
-2. Sample colors precisely from the image and use exact hex values (e.g. #F26522 not "orange")
-3. viewBox must exactly match the image's aspect ratio (measure relative proportions)
-4. Use proper SVG elements:
-   - <circle> or <ellipse> for round shapes (NOT paths with arc approximations)
-   - <path> with smooth cubic bezier curves (C command) for organic letterforms
-   - <text> with font-size, letter-spacing, font-weight for all text content
-   - <rect> for rectangular regions
-   - <g> to group related elements
-5. Layer elements strictly back-to-front (background first, foreground last)
-6. Do NOT hallucinate elements not in the image
-7. Do NOT use <image>, <use>, or external references
-8. Include xmlns: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 W H">
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MANDATORY SVG FEATURES  (use them where present in the image)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-RETURN ONLY the raw SVG code — no markdown fences, no explanation.
-Start with <svg and end with </svg>.
+1. GRADIENTS in <defs> — required whenever colour varies across a region:
+
+   Linear gradient (metallic sheen, bevel, depth shadow, directional light):
+     <linearGradient id="lg1" x1="0%" y1="0%" x2="0%" y2="100%">
+       <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.9"/>
+       <stop offset="50%"  stop-color="#cc8833"/>
+       <stop offset="100%" stop-color="#663300"/>
+     </linearGradient>
+
+   Radial gradient (orb highlight, sphere, spotlight, glowing badge):
+     <radialGradient id="rg1" cx="35%" cy="30%" r="55%" fx="35%" fy="30%">
+       <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.8"/>
+       <stop offset="60%"  stop-color="#ff5500"/>
+       <stop offset="100%" stop-color="#330000"/>
+     </radialGradient>
+
+   Then reference with: fill="url(#lg1)"
+
+2. SVG FILTERS in <defs> — required for soft effects:
+
+   Drop shadow:
+     <filter id="shadow1" x="-20%" y="-20%" width="140%" height="140%">
+       <feDropShadow dx="3" dy="4" stdDeviation="4"
+                     flood-color="#000000" flood-opacity="0.45"/>
+     </filter>
+
+   Outer glow / bloom:
+     <filter id="glow1" x="-30%" y="-30%" width="160%" height="160%">
+       <feGaussianBlur stdDeviation="5" result="blur"/>
+       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+     </filter>
+
+   Reference with: filter="url(#shadow1)"
+
+3. ELEMENT RULES:
+   - <circle> / <ellipse>  for round shapes  (NOT paths with arc approximations)
+   - <path C …>            for organic curves and letterforms
+   - <rect rx="N">         for rectangles with optional rounded corners
+   - <text>                for ALL readable text — set font-size, font-weight,
+                           letter-spacing, and fill precisely
+   - <g id="…">            group related elements; use descriptive id names
+
+4. LAYER ORDER — strictly back-to-front:
+   background → large fill shapes → shadows → gradient fills →
+   inner highlights → foreground details → text → top highlights
+
+5. ACCURACY:
+   - Sample every colour precisely; write exact hex (e.g. #F26522 not "orange")
+   - viewBox MUST match the image's exact aspect ratio
+   - Capture EVERY visible element including small sub-text and fine details
+   - Do NOT invent elements not visible in the image
+   - Do NOT use <image>, <use>, or any external references
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3D LOGOS — SPECIAL RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Each visible face / surface of a 3D object needs its own <path> or <g>
+• Represent depth with gradients, NOT flat colour
+• Highlight = radialGradient from the light spot (white → transparent → base colour)
+• Bevel/edge = linearGradient across the edge (light tone → base → dark tone)
+• Cast shadow = feGaussianBlur filter on a dark shape behind the object
+• Metallic = linearGradient with a bright band in the middle
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Return ONLY raw SVG — no markdown fences, no explanation.
+First line must be exactly:
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 W H">
+Last line must be: </svg>
 """
 
 
