@@ -1,22 +1,45 @@
 # Vector Agent
 
-Converts raster logo images (PNG, JPG, BMP) into print-ready EPS vector files.
+Converts any raster image into a print-ready **SVG + EPS** vector file.
 
-Two modes: a **standalone advanced pipeline** (recommended) and a **ReAct agent** that orchestrates multiple specialist tools automatically.
+Pipeline: PIL upscale → (optional AI enhancement) → PNG → SVG → EPS
 
 ---
 
-## Quick Start
+## Pipeline
+
+```
+Input image  (PNG, JPG, JPEG, WEBP, BMP, TIFF, GIF)
+   │
+   ▼  Step 1 — Enhance
+   │  Default : PIL LANCZOS upscale + UnsharpMask sharpening
+   │  Optional: gpt-image-1 resolution enhancement → then PIL upscale
+   │            (set CALL_AGENT=true)
+   │
+   ▼  Step 2 — Upscale (optional)
+   │  Real-ESRGAN AI upscale — better edge sharpness on complex images
+   │  (set USE_REALESRGAN=true)
+   │
+   ▼  Step 3 — PNG → SVG
+   │  Default : Inkscape bitmap tracer (Gaussian blur pre-processing)
+   │  Optional: vtracer — better for gradient logos, no concentric rings
+   │            (set USE_VTRACER=true, falls back to Inkscape on failure)
+   │
+   ▼  Step 4 — SVG → EPS
+      Inkscape PostScript export — print-ready EPS
+```
+
+The upscale factor is computed automatically so the output PNG never exceeds **20 MB**.
+
+---
+
+## Quick Start (CLI)
 
 ### 1. Prerequisites
 
-**Python 3.10+** and **Git** are required.
+**Python 3.10+** required.
 
 ```bash
-# Clone / enter the project
-cd vector_agent
-
-# Create and activate a virtual environment
 python -m venv .venv
 
 # Windows
@@ -25,131 +48,178 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-# Install Python dependencies
-pip install -r vector_agent/requirements.txt
+pip install -r requirements.txt
 ```
 
-**OpenAI API key** — required for all LLM features:
-
-```bash
-# Inside vector_agent/
-cp .env.example .env
-# Edit .env and set:  OPENAI_API_KEY=sk-...
-```
-
-**Inkscape** *(optional but strongly recommended for best EPS quality)*:
+**Inkscape >= 1.2** *(required for tracing and EPS export)*:
 
 | Platform | Install |
 |----------|---------|
-| Windows  | https://inkscape.org/release/ — add to PATH during install |
+| Windows  | https://inkscape.org/release/ — check "Add to PATH" during install |
 | macOS    | `brew install inkscape` |
 | Ubuntu   | `sudo apt install inkscape` |
 
-Without Inkscape the pipeline falls back to CairoSVG then a built-in parser — both produce correct output but Inkscape uses PostScript Level 3 with true gradient rendering.
-
----
-
-## Mode 1 — Advanced Pipeline (recommended)
-
-`vectorize_advanced.py` — CIELAB colour quantisation + gradient preservation + SVG filters + 3D depth cues.
+**Environment:**
 
 ```bash
-# Basic usage — output goes to ./output/<name>_advanced.eps
-python vectorize_advanced.py logo.png
-
-# Custom output path and canvas size
-python vectorize_advanced.py logo.png --output brand.eps --width-mm 120 --height-mm 80
-
-# Skip saving the intermediate SVG
-python vectorize_advanced.py logo.png --no-svg
+cp .env.example .env
+# Edit .env — set OPENAI_API_KEY if using CALL_AGENT=true
 ```
 
-### What the pipeline does
+### 2. Run
 
-```
-Input image
-   │
-   ▼  Stage 1 — Preprocess
-   │  Lanczos upscale to ≥1400 px + bilateral denoising (kills JPEG halos)
-   │
-   ▼  Stage 2 — LLM Analysis  (GPT-4o)
-   │  Returns structured JSON: image type, layer breakdown, gradient zones,
-   │  shadow/glow/bevel flags, total colour-region count (k)
-   │
-   ▼  Stage 3 — Perceptual Segmentation
-   │  CIELAB median-cut quantisation (k regions)
-   │  Per-region gradient detection: solid / linear / radial
-   │
-   ▼  Stage 4 — Effect Detection
-   │  Scans boundary softness against original pixels
-   │  Dark + soft edge → feGaussianBlur shadow filter
-   │  Bright + soft edge → feMerge glow filter
-   │
-   ▼  Stage 5 — SVG Assembly
-   │  <defs> with <linearGradient>, <radialGradient>, <filter> elements
-   │  Regions rendered back-to-front (background → foreground)
-   │
-   ▼  Stage 6 — EPS Export
-      Inkscape CLI (PS Level 3) → CairoSVG → built-in parser
+```bash
+# Full pipeline
+python main.py logo.png
+
+# Skip enhancement (trace original directly)
+python main.py logo.png --no-enhance
+
+# Custom output directory
+python main.py logo.png --output-dir ./results
 ```
 
-### Output files
+Output files are saved to `./output/` by default:
 
 | File | Description |
 |------|-------------|
-| `output/<name>_advanced.svg` | Intermediate SVG with gradients and filter defs |
-| `output/<name>_advanced.eps` | Final print-ready EPS |
+| `<name>_enhanced.png` | Enhanced / upscaled PNG |
+| `<name>.svg` | Vectorized SVG |
+| `<name>.eps` | Print-ready EPS |
 
 ---
 
-## Mode 2 — ReAct Agent
+## REST API
 
-`main.py` runs a LangChain ReAct agent that picks the best tool for each image automatically.
+### Start the server
 
 ```bash
-python main.py logo.png
-python main.py logo.png --output logo.eps --width-mm 100 --height-mm 120
-python main.py logo.png --output logo.eps --width-mm 100 --height-mm 120 --pms "PMS 485" "PMS 286"
-python main.py logo.png --quiet   # suppress step-by-step output
+uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-### Agent tool chain
+Interactive docs available at `http://localhost:8000/docs`.
 
+---
+
+### POST `/generate`
+
+Run the full pipeline. Accepts JSON.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `image` | string | Yes | Image URL (`http/https`) **or** base64 string (plain or `data:image/png;base64,...`) |
+| `filename` | string | No | Output file stem. Auto-detected from URL; defaults to `"image"` for base64 |
+| `call_agent` | bool | No | Use gpt-image-1 enhancement. Overrides `CALL_AGENT` env |
+| `no_enhance` | bool | No | Skip enhancement step entirely |
+| `use_vtracer` | bool | No | Use vtracer for PNG→SVG. Overrides `USE_VTRACER` env |
+| `use_realesrgan` | bool | No | Run Real-ESRGAN upscale. Overrides `USE_REALESRGAN` env |
+
+**Example — image URL:**
+```json
+{
+  "image": "https://example.com/logo.png",
+  "filename": "logo",
+  "use_vtracer": true
+}
 ```
-validate_image          → quality score + issue list
-preprocess_image        → denoise / deskew / sharpen
-enhance_with_gpt        → GPT-powered upscale (if quality < 0.7)
-high_fidelity_svg_vectorize   → max-detail tonal trace (4× upscale, 80 colours)
-semantic_svg_vectorize        → 3D text effects: text + shapes + gradients
-gpt_svg_vectorize             → GPT-4o generates clean SVG code directly
-vectorize_to_eps              → fallback contour tracing → EPS
-apply_pms_color               → Pantone colour mapping (optional)
+
+**Example — base64:**
+```json
+{
+  "image": "data:image/png;base64,iVBORw0KGgo...",
+  "filename": "logo",
+  "call_agent": false
+}
+```
+
+**Success response:**
+```json
+{
+  "job_id": "f3a9c12e-4b1d-...",
+  "status": "done",
+  "files": {
+    "enhanced_png": "/files/f3a9c12e-4b1d-.../logo_enhanced.png",
+    "svg":          "/files/f3a9c12e-4b1d-.../logo.svg",
+    "eps":          "/files/f3a9c12e-4b1d-.../logo.eps"
+  },
+  "meta": {
+    "stem":           "logo",
+    "tracer":         "Inkscape",
+    "call_agent":     false,
+    "use_realesrgan": false,
+    "elapsed_sec":    22.4
+  },
+  "expires_at": "2026-05-11T11:00:00+00:00"
+}
+```
+
+**Error response:**
+```json
+{
+  "detail": "Unsupported image format '.pdf'. Supported: .bmp, .gif, .jpg, ..."
+}
 ```
 
 ---
 
-## Mode 3 — Legacy Scripts
+### GET `/files/{job_id}/{filename}`
+
+Download a generated file.
 
 ```bash
-# Classic LLM-guided colour clustering (original approach, kept for reference)
-python vectorize_llm_guided.py logo.png
-
-# Pure vtracer vectorisation (no AI, fastest)
-python vectorize_pure.py logo.png
+curl -O http://localhost:8000/files/f3a9c12e-.../logo.svg
+curl -O http://localhost:8000/files/f3a9c12e-.../logo.eps
 ```
+
+Returns `404` if the job does not exist or files have expired. Generated files are automatically deleted after `FILE_TTL_MINUTES` (default: 60 minutes).
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and edit:
+Copy `.env.example` to `.env`:
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `OPENAI_API_KEY` | **Yes** | — | OpenAI API key |
-| `AGENT_MODEL` | No | `gpt-4o` | GPT model name |
-| `OUTPUT_DIR` | No | `./output` | Output directory |
-| `POTRACE_BIN` | No | `potrace` | Path to potrace binary |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OUTPUT_DIR` | `./output` | Directory for generated files |
+| `CALL_AGENT` | `false` | Use gpt-image-1 enhancement (requires `OPENAI_API_KEY`) |
+| `OPENAI_API_KEY` | — | OpenAI API key — required only when `CALL_AGENT=true` |
+| `USE_VTRACER` | `false` | Use vtracer for PNG→SVG instead of Inkscape |
+| `USE_REALESRGAN` | `false` | Run Real-ESRGAN AI upscale after PIL upscale |
+| `REALESRGAN_TILE` | `512` | Real-ESRGAN tile size (`0` = full image, needs high VRAM) |
+| `FILE_TTL_MINUTES` | `60` | Minutes before generated API files are auto-deleted |
+
+Payload flags (`call_agent`, `use_vtracer`, `use_realesrgan`) override their corresponding env variables per request.
+
+---
+
+## Optional Dependencies
+
+### vtracer (recommended for gradient logos)
+
+```bash
+pip install vtracer
+```
+
+Better than Inkscape for logos with gradients — avoids concentric rings and color bleed. Falls back to Inkscape automatically if it crashes.
+
+### Real-ESRGAN (AI upscaling)
+
+Install PyTorch first (CPU-only, ~200 MB):
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
+
+Then:
+
+```bash
+pip install realesrgan basicsr facexlib gfpgan opencv-python numpy
+```
+
+The model weights (~67 MB) download automatically on first run.
 
 ---
 
@@ -157,55 +227,36 @@ Copy `.env.example` to `.env` and edit:
 
 ```
 vector_agent/
-├── vectorize_advanced.py      ← NEW: standalone advanced pipeline entry point
-├── main.py                    ← ReAct agent entry point
-├── agent.py                   ← LangChain ReAct agent + system prompt
-├── vectorize_llm_guided.py    ← legacy: LLM k-means pipeline
-├── vectorize_pure.py          ← legacy: vtracer pipeline
-│
-├── pipeline/                  ← NEW: advanced pipeline modules
-│   ├── color_engine.py        ← CIELAB median-cut + gradient detection
-│   ├── path_tracer.py         ← adaptive-tension bezier path fitting
-│   ├── effect_detector.py     ← shadow/glow detection → SVG filter defs
-│   ├── svg_builder.py         ← SVG assembly with <defs>, gradients, filters
-│   ├── llm_analyzer.py        ← structured GPT-4o image analysis
-│   ├── eps_exporter.py        ← Inkscape → CairoSVG → built-in chain
-│   └── orchestrator.py        ← 6-stage pipeline controller
-│
-├── tools/                     ← agent tool functions
-│   ├── validate_image.py
-│   ├── preprocess_image.py
-│   ├── segment_profile.py
-│   ├── enhance_gpt.py
-│   ├── high_fidelity_svg_vectorize.py
-│   ├── semantic_svg_vectorize.py
-│   ├── gpt_svg_vectorize.py   ← updated: gradient/3D-aware SVG prompt
-│   ├── vectorize_eps.py
-│   └── apply_pms_color.py
-│
-├── utils/
-│   └── conversions.py         ← mm ↔ pts ↔ px unit conversions
-│
-├── output/                    ← generated files (gitignored)
+├── main.py                  ← CLI entry point
+├── api.py                   ← REST API (FastAPI)
+├── pipeline/
+│   ├── enhance.py           ← PIL upscale + optional gpt-image-1 enhancement
+│   ├── vectorize.py         ← Inkscape PNG→SVG and SVG→EPS
+│   ├── vtracer_convert.py   ← vtracer PNG→SVG (isolated subprocess)
+│   └── upscale.py           ← Real-ESRGAN AI upscaling
+├── requirements.txt
 ├── .env.example
-└── requirements.txt
+└── output/                  ← generated files (gitignored)
 ```
 
 ---
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: No module named 'cv2'`**
-→ Make sure the virtual environment is activated and `pip install -r requirements.txt` completed without errors.
+**`Inkscape not found`**
+→ Install Inkscape >= 1.2 from https://inkscape.org/release/ and ensure it is on your PATH.
 
 **`OPENAI_API_KEY is not set`**
-→ Copy `.env.example` → `.env` and fill in your key.
+→ Only needed when `CALL_AGENT=true`. Copy `.env.example` to `.env` and set the key.
 
-**EPS looks like flat colours even though the logo has gradients**
-→ Install Inkscape (see Prerequisites). Without it, SVG filter effects and gradients are approximated by the built-in fallback parser.
+**SVG has concentric rings on gradient logos**
+→ Enable vtracer: set `USE_VTRACER=true` in `.env` or pass `"use_vtracer": true` in the API payload.
 
-**Very large SVG / slow export**
-→ This is normal for 3D logos — more gradient regions = more paths. Use `--no-svg` if you only need the EPS.
+**SVG is a plain image box (not traced)**
+→ Inkscape trace produced no paths. Check that Inkscape's `bin/` folder is on PATH and the input image is not corrupted.
 
-**`potrace` not found warning**
-→ Only affects the agent's fallback path for flat B&W logos. Install potrace or ignore — the pipeline uses bezier contour tracing as fallback.
+**vtracer crashes silently**
+→ The pipeline automatically falls back to Inkscape. This is often a Python version incompatibility with the vtracer native extension.
+
+**API request times out**
+→ The pipeline is synchronous and can take 20–90 seconds depending on options. Set your HTTP client timeout to at least 120 seconds. If running behind Nginx, set `proxy_read_timeout 120s`.
