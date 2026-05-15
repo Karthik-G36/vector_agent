@@ -7,6 +7,14 @@ fastapi>=0.111.0
 uvicorn>=0.29.0
 httpx>=0.27.0
 
+# ── SAM 2 (optional — only needed when USE_SAM2=true) ────────────────────────
+# Segment Anything Model 2 — universal auto-segmentation (logos + photos)
+# Model checkpoint (~300 MB) downloaded automatically on first run via huggingface_hub.
+# Install PyTorch first (see Real-ESRGAN section below), then:
+#   pip install sam2 huggingface_hub
+sam2>=1.0.0
+huggingface_hub>=0.23.0
+
 # ── rembg (optional — only needed when REMOVE_BG=true) ───────────────────────
 # Background removal via U2Net model (~170 MB, downloaded on first run)
 #   pip install rembg onnxruntime

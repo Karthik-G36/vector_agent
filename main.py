@@ -8,7 +8,8 @@ Pipeline:
   1. Enhance with LANCZOS upscale + UnsharpMask  (or gpt-image-1 when --call-agent)
   2. Upscale with Real-ESRGAN (--use-realesrgan / USE_REALESRGAN=true)
   3. Remove background (--remove-bg / REMOVE_BG=true)
-  4. Trace PNG to SVG via vtracer (--use-vtracer / USE_VTRACER=true) or Inkscape
+  4. Segment with SAM 2 (--use-sam2 / USE_SAM2=true) → per-region binary masks
+     OR trace whole image (default)
   5. Convert SVG to EPS via Inkscape
 
 CLI flags override the matching .env variable for that run.
@@ -66,6 +67,10 @@ def main() -> None:
         "--remove-bg", action=argparse.BooleanOptionalAction, default=None,
         help="Remove background before tracing (overrides REMOVE_BG env)",
     )
+    parser.add_argument(
+        "--use-sam2", action=argparse.BooleanOptionalAction, default=None,
+        help="Segment with SAM 2 then compose layered SVG (overrides USE_SAM2 env)",
+    )
     args = parser.parse_args()
 
     img_path = Path(args.image)
@@ -89,19 +94,25 @@ def main() -> None:
     use_vtracer = _resolve(args.use_vtracer,     "USE_VTRACER",    False)
     use_esrgan  = _resolve(args.use_realesrgan,  "USE_REALESRGAN", False)
     remove_bg   = _resolve(args.remove_bg,       "REMOVE_BG",      False)
+    use_sam2    = _resolve(args.use_sam2,        "USE_SAM2",       False)
     esrgan_tile = args.realesrgan_tile if args.realesrgan_tile is not None else int(os.getenv("REALESRGAN_TILE", "512"))
 
-    # Pick PNG→SVG tracer
-    if use_vtracer:
+    # Pick PNG→SVG tracer (not used when SAM2 is on — masks are traced individually)
+    if use_sam2:
+        tracer_label = "SAM2 + Inkscape (layered)"
+    elif use_vtracer:
         from pipeline.vtracer_convert import png_to_svg
         tracer_label = "vtracer"
     else:
         from pipeline.vectorize import png_to_svg
         tracer_label = "Inkscape"
 
+    # When ESRGAN is on: 2 sub-steps (ESRGAN + enhance/sharpen) replace the single enhance step
+    _esrgan_extra = 1 if use_esrgan and not args.no_enhance else 0
     total_steps = (3
-                   + (1 if use_esrgan and not args.no_enhance else 0)
-                   + (1 if remove_bg else 0))
+                   + _esrgan_extra
+                   + (1 if remove_bg else 0)
+                   + (1 if use_sam2 else 0))
     step = 0
 
     print(f"\n=== Vector Agent ===")
@@ -120,23 +131,37 @@ def main() -> None:
         next_step("Enhancement skipped (--no-enhance)")
     else:
         enhanced_png = out_dir / f"{stem}_enhanced.png"
-        if call_agent:
+
+        if use_esrgan:
+            # Real-ESRGAN runs first — upscale the original, then enhance
+            next_step("Upscaling with Real-ESRGAN (priority step)...")
+            from pipeline.upscale import upscale_image
+            # ESRGAN overwrites in-place, so copy original to enhanced_png first
+            import shutil
+            shutil.copy2(str(img_path), str(enhanced_png))
+            upscale_image(str(enhanced_png), tile=esrgan_tile)
+            source_png = enhanced_png
+
+            if call_agent:
+                next_step("Enhancing Real-ESRGAN output with gpt-image-1...")
+                from pipeline.enhance import enhance_with_agent
+                enhance_with_agent(str(enhanced_png), str(enhanced_png))
+            else:
+                next_step("Sharpening Real-ESRGAN output (LANCZOS + sharpen)...")
+                enhance_image(str(enhanced_png), str(enhanced_png))
+        elif call_agent:
             next_step("Enhancing with gpt-image-1 + LANCZOS 4x + sharpen...")
             from pipeline.enhance import enhance_with_agent
             enhance_with_agent(str(img_path), str(enhanced_png))
+            source_png = enhanced_png
         else:
             next_step("Enhancing (LANCZOS 4x + sharpen)...")
             enhance_image(str(img_path), str(enhanced_png))
+            source_png = enhanced_png
+
         print(f"      Saved: {enhanced_png.name}")
-        source_png = enhanced_png
 
-    # ── Step 2: Real-ESRGAN upscale (optional) ────────────────────────────────
-    if use_esrgan and not args.no_enhance:
-        next_step("Upscaling with Real-ESRGAN (overwriting enhanced file)...")
-        from pipeline.upscale import upscale_image
-        upscale_image(str(source_png), tile=esrgan_tile)
-
-    # ── Step 3: Remove background (optional) ─────────────────────────────────
+    # ── Step 2: Remove background (optional) ─────────────────────────────────
     if remove_bg:
         nobg_png = out_dir / f"{stem}_nobg.png"
         next_step("Removing background (rembg)...")
@@ -145,19 +170,53 @@ def main() -> None:
         print(f"      Saved: {nobg_png.name}")
         source_png = nobg_png
 
-    # ── Step 4: PNG → SVG ─────────────────────────────────────────────────────
+    # ── Step 4: Segment → layered SVG  OR  single-image trace ───────────────
     svg_path = out_dir / f"{stem}.svg"
-    next_step(f"Tracing PNG to SVG via {tracer_label}...")
-    try:
-        png_to_svg(str(source_png), str(svg_path))
-    except Exception as e:
-        if use_vtracer:
-            print(f"      [vtracer] failed: {e}")
-            print(f"      [vtracer] falling back to Inkscape...")
-            from pipeline.vectorize import png_to_svg as inkscape_png_to_svg
-            inkscape_png_to_svg(str(source_png), str(svg_path))
-        else:
-            raise
+    if use_sam2:
+        from pipeline.segment import segment_image, merge_masks_by_color
+        from pipeline.vectorize import trace_mask_to_svg
+        from pipeline.compose import compose_svg
+
+        masks_dir = out_dir / f"{stem}_masks"
+        masks_dir.mkdir(exist_ok=True)
+
+        next_step("Segmenting with SAM 2...")
+        segments = segment_image(str(source_png), str(masks_dir))
+
+        next_step("Tracing masks and composing layered SVG...")
+        # Merge same-color masks before tracing so letter forms aren't torn apart.
+        # SAM2 over-segments logos into many same-color fragments; merging produces
+        # one clean combined mask per color group → one trace per color layer.
+        merged = merge_masks_by_color(segments, masks_dir)
+
+        svg_segments = []
+        for seg in merged:
+            traced_svg_path = masks_dir / (Path(seg["mask_path"]).stem + "_traced.svg")
+            try:
+                trace_mask_to_svg(seg["mask_path"], str(traced_svg_path))
+                svg_segments.append({
+                    "traced_svg": traced_svg_path.read_text(encoding="utf-8"),
+                    "color": seg["color"],
+                })
+            except Exception as e:
+                print(f"      [warn] skipping {Path(seg['mask_path']).name}: {e}")
+
+        if not svg_segments:
+            raise RuntimeError("SAM 2 segmentation produced no traceable masks.")
+
+        compose_svg(svg_segments, str(svg_path))
+    else:
+        next_step(f"Tracing PNG to SVG via {tracer_label}...")
+        try:
+            png_to_svg(str(source_png), str(svg_path))
+        except Exception as e:
+            if use_vtracer:
+                print(f"      [vtracer] failed: {e}")
+                print(f"      [vtracer] falling back to Inkscape...")
+                from pipeline.vectorize import png_to_svg as inkscape_png_to_svg
+                inkscape_png_to_svg(str(source_png), str(svg_path))
+            else:
+                raise
     print(f"      Saved: {svg_path.name}")
 
     # ── Step 5: SVG → EPS via Inkscape ────────────────────────────────────────

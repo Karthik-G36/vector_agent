@@ -20,9 +20,11 @@ try:
 except Exception:
     pass
 
+import io
+
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageCms
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
 
@@ -57,16 +59,35 @@ def _get_upsampler(tile: int) -> RealESRGANer:
     return _upsampler
 
 
+def _to_srgb(img: Image.Image) -> Image.Image:
+    """Convert to sRGB honouring any embedded ICC profile, then return an RGB image."""
+    icc_bytes = img.info.get("icc_profile")
+    if not icc_bytes:
+        return img.convert("RGB")
+    try:
+        src_profile  = ImageCms.ImageCmsProfile(io.BytesIO(icc_bytes))
+        srgb_profile = ImageCms.createProfile("sRGB")
+        return ImageCms.profileToProfile(img, src_profile, srgb_profile, outputMode="RGB")
+    except Exception:
+        return img.convert("RGB")
+
+
 def upscale_image(image_path: str, tile: int = 512) -> None:
     """
     Upscale image at image_path 4x with Real-ESRGAN and overwrite it in-place.
     tile=512 is safe for CPU and low-VRAM GPU; use tile=0 for full-image on high-VRAM GPU.
+    ICC profile is applied before upscaling so colors are correctly mapped to sRGB.
     """
     upsampler = _get_upsampler(tile)
 
     with Image.open(image_path) as img:
         orig_w, orig_h = img.size
-        img_np = np.array(img.convert("RGB"))
+        has_icc = False #bool(img.info.get("icc_profile"))
+        rgb = _to_srgb(img)
+        img_np = np.array(rgb)
+
+    if has_icc:
+        print(f"      [ICC] profile detected — converted to sRGB before upscaling")
 
     img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 

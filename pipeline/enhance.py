@@ -17,7 +17,7 @@ _SHARPEN_RADIUS = 2
 _SHARPEN_PERCENT = 150
 _SHARPEN_THRESHOLD = 3
 
-_MAX_OUTPUT_BYTES = 5 * 1024 * 1024  # 5 MB hard limit
+_MAX_OUTPUT_BYTES = 1 * 1024 * 1024  # 5 MB hard limit
 # Conservative estimate: 3 RGB channels × 50% PNG compression ratio.
 # Logos compress better, so this is a safe upper bound.
 _PNG_BYTES_PER_PIXEL = 1
@@ -30,16 +30,16 @@ _GPT_SIZES = [
 ]
 
 _GPT_PROMPT = (
-    "This is a resolution enhancement task only — not a creative or design task. "
-    "Upscale and sharpen this image while keeping every single pixel relationship identical to the source. "
-    "Every letterform, glyph, stroke, curve, and serif must remain exactly as drawn in the original — "
-    "Do not redraw, reinterpret, redesign, or restyle any letter or character shape in any way. "
-    "Do not alter the text present in the image in any way."
-    "Each and every character must match the original stroke-for-stroke. "
-    "Do not change colors, shadows, gradients, backgrounds, proportions, spacing, or any design element. "
-    "The output must be a pixel-faithful, higher-resolution version of the exact same image."
+    "Image enhancement task only. "
+    "Text integrity is highest priority. "
+    "Preserve the original image composition exactly. "
+    "Do not redesign, recreate, reinterpret, restyle, or modify any visual element. "
+    "Maintain exact layout, positioning, spacing, proportions, colors, gradients, shadows, and background. "
+    "Preserve all text exactly as present in the source image, including every character, glyph, font appearance, alignment, and spacing. "
+    "Do not replace, correct, or redraw text. "
+    "If enhancement would alter text, preserve original text appearance unchanged. "
+    "Only improve clarity, denoising, sharpness, and resolution."
 )
-
 # _GPT_PROMPT=(
 #     """
 #     ZERO GENERATION. ZERO HALLUCINATION. ZERO INTERPRETATION.
@@ -87,7 +87,7 @@ def _to_srgb(img: Image.Image) -> Image.Image:
         return img.convert("RGB")
 
 
-def _compute_upscale_factor(w: int, h: int, max_factor: int = 4) -> int:
+def _compute_upscale_factor(w: int, h: int, max_factor: int = 1) -> int:
     """Return the largest integer factor where the estimated PNG output stays under 20 MB."""
     for factor in range(max_factor, 0, -1):
         if w * factor * h * factor * _PNG_BYTES_PER_PIXEL <= _MAX_OUTPUT_BYTES:

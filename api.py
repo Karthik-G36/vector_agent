@@ -69,6 +69,7 @@ class GenerateRequest(BaseModel):
     use_vtracer:    Optional[bool] = None
     use_realesrgan: Optional[bool] = None
     remove_bg:      Optional[bool] = None
+    use_sam2:       Optional[bool] = None
 
 
 # ── Image input helpers ───────────────────────────────────────────────────────
@@ -189,6 +190,7 @@ async def generate(request: GenerateRequest):
     cfg_use_vtracer    = _resolve(request.use_vtracer,    "USE_VTRACER",    False)
     cfg_use_realesrgan = _resolve(request.use_realesrgan, "USE_REALESRGAN", False)
     cfg_remove_bg      = _resolve(request.remove_bg,      "REMOVE_BG",      False)
+    cfg_use_sam2       = _resolve(request.use_sam2,       "USE_SAM2",       False)
     esrgan_tile        = int(os.getenv("REALESRGAN_TILE", "512"))
 
     # ── Set up job directory ──────────────────────────────────────────────────
@@ -208,19 +210,31 @@ async def generate(request: GenerateRequest):
 
         # ── Step 1: Enhance ───────────────────────────────────────────────────
         if not cfg_no_enhance:
+            import shutil as _shutil
             enhanced_png = job_dir / f"{stem}_enhanced.png"
-            if cfg_call_agent:
+
+            if cfg_use_realesrgan:
+                # Real-ESRGAN has priority — upscale original first
+                from pipeline.upscale import upscale_image
+                _shutil.copy2(str(original_path), str(enhanced_png))
+                upscale_image(str(enhanced_png), tile=esrgan_tile)
+                source_png = enhanced_png
+
+                if cfg_call_agent:
+                    # Then pass ESRGAN output through gpt-image-1
+                    from pipeline.enhance import enhance_with_agent
+                    enhance_with_agent(str(enhanced_png), str(enhanced_png))
+                else:
+                    from pipeline.enhance import enhance_image
+                    enhance_image(str(enhanced_png), str(enhanced_png))
+            elif cfg_call_agent:
                 from pipeline.enhance import enhance_with_agent
                 enhance_with_agent(str(original_path), str(enhanced_png))
+                source_png = enhanced_png
             else:
                 from pipeline.enhance import enhance_image
                 enhance_image(str(original_path), str(enhanced_png))
-            source_png = enhanced_png
-
-        # ── Step 2: Real-ESRGAN (optional) ────────────────────────────────────
-        if cfg_use_realesrgan and not cfg_no_enhance:
-            from pipeline.upscale import upscale_image
-            upscale_image(str(source_png), tile=esrgan_tile)
+                source_png = enhanced_png
 
         # ── Step 3: Remove background (optional) ─────────────────────────────
         if cfg_remove_bg:
@@ -229,9 +243,37 @@ async def generate(request: GenerateRequest):
             remove_background(str(source_png), str(nobg_png))
             source_png = nobg_png
 
-        # ── Step 4: PNG → SVG ─────────────────────────────────────────────────
+        # ── Step 4: Segment → layered SVG  OR  single-image trace ───────────
         svg_path = job_dir / f"{stem}.svg"
-        if cfg_use_vtracer:
+        if cfg_use_sam2:
+            from pipeline.segment import segment_image, merge_masks_by_color
+            from pipeline.vectorize import trace_mask_to_svg
+            from pipeline.compose import compose_svg
+
+            masks_dir = job_dir / f"{stem}_masks"
+            masks_dir.mkdir(exist_ok=True)
+
+            segments = segment_image(str(source_png), str(masks_dir))
+            merged = merge_masks_by_color(segments, masks_dir)
+
+            svg_segments = []
+            for seg in merged:
+                traced_svg_path = masks_dir / (Path(seg["mask_path"]).stem + "_traced.svg")
+                try:
+                    trace_mask_to_svg(seg["mask_path"], str(traced_svg_path))
+                    svg_segments.append({
+                        "traced_svg": traced_svg_path.read_text(encoding="utf-8"),
+                        "color": seg["color"],
+                    })
+                except Exception:
+                    pass
+
+            if not svg_segments:
+                raise RuntimeError("SAM 2 segmentation produced no traceable masks.")
+
+            compose_svg(svg_segments, str(svg_path))
+            tracer_used = "SAM2 + Inkscape (layered)"
+        elif cfg_use_vtracer:
             from pipeline.vtracer_convert import png_to_svg
             try:
                 png_to_svg(str(source_png), str(svg_path))
@@ -243,7 +285,7 @@ async def generate(request: GenerateRequest):
             from pipeline.vectorize import png_to_svg
             png_to_svg(str(source_png), str(svg_path))
 
-        # ── Step 4: SVG → EPS ─────────────────────────────────────────────────
+        # ── Step 5: SVG → EPS ─────────────────────────────────────────────────
         eps_path = job_dir / f"{stem}.eps"
         from pipeline.vectorize import svg_to_eps
         svg_to_eps(str(svg_path), str(eps_path))
