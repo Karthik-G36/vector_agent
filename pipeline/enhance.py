@@ -11,6 +11,7 @@ import base64
 import io
 
 from openai import OpenAI
+from pipeline.token_tracker import tracker
 from PIL import Image, ImageCms, ImageFilter
 
 _SHARPEN_RADIUS = 2
@@ -132,6 +133,15 @@ def enhance_with_agent(input_path: str, output_path: str) -> None:
         size=size,
     )
 
+    usage = getattr(response, "usage", None)
+    if usage:
+        tracker.record(
+            label="gpt-image-1 (enhance)",
+            model="gpt-image-1",
+            prompt_tokens=getattr(usage, "input_tokens", 0),
+            completion_tokens=getattr(usage, "output_tokens", 0),
+            total_tokens=getattr(usage, "total_tokens", 0),
+        )
     raw = base64.b64decode(response.data[0].b64_json)
     with Image.open(io.BytesIO(raw)) as gpt_img:
         gpt_w, gpt_h = gpt_img.size

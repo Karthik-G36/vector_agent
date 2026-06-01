@@ -43,3 +43,5 @@ gfpgan>=1.3.8
 # ── System dependency (not a Python package) ──────────────────────────────────
 #   Inkscape >= 1.2  — https://inkscape.org/release/
 #   Required for PNG -> SVG tracing and SVG -> EPS export.
+
+python-multipart

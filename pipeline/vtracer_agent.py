@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from openai import OpenAI
+from pipeline.token_tracker import tracker
 
 _MAX_ITERATIONS = 3
 _QUALITY_THRESHOLD = 7  # stop early once score reaches this
@@ -47,7 +48,7 @@ def _render_svg_to_png(svg_path: str) -> str | None:
 
 def _ask_vision(enhanced_png: str, svg_render_png: str, params: dict) -> dict:
     """Send both images to GPT-4o vision for quality scoring + param suggestions."""
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     model = os.getenv("AGENT_MODEL", "gpt-4o")
 
     user_text = f"""You are a vectorization quality expert.
@@ -101,6 +102,15 @@ Respond with ONLY a raw JSON object (no markdown fences):
             ],
         }],
     )
+    usage = response.usage
+    if usage:
+        tracker.record(
+            label="vtracer-agent (vision)",
+            model=model,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+        )
     return json.loads(response.choices[0].message.content)
 
 
