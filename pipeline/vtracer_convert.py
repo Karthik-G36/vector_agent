@@ -18,14 +18,25 @@ from PIL import Image
 
 
 # ── vtracer parameters ────────────────────────────────────────────────────────
-_COLOR_PRECISION  = 5
-_FILTER_SPECKLE   = 8
-_LAYER_DIFFERENCE = 24
+_COLOR_PRECISION  = 6
+_FILTER_SPECKLE   = 3
+_LAYER_DIFFERENCE = 16
 _MODE             = "spline"
 _HIERARCHICAL     = "stacked"
 _CORNER_THRESHOLD = 60
-_LENGTH_THRESHOLD = 4.0
-_MAX_TRACE_DIM    = 800
+_LENGTH_THRESHOLD = 2.0
+_MAX_TRACE_DIM    = 3000
+
+DEFAULT_PARAMS = dict(
+    colormode="color",
+    hierarchical=_HIERARCHICAL,
+    mode=_MODE,
+    filter_speckle=_FILTER_SPECKLE,
+    color_precision=_COLOR_PRECISION,
+    layer_difference=_LAYER_DIFFERENCE,
+    corner_threshold=_CORNER_THRESHOLD,
+    length_threshold=_LENGTH_THRESHOLD,
+)
 
 
 def _prepare_image(input_png: str) -> tuple[str, str | None]:
@@ -61,25 +72,18 @@ def _prepare_image(input_png: str) -> tuple[str, str | None]:
     return tmp.name, tmp.name
 
 
-def _run_vtracer_subprocess(src: str, out: str) -> None:
+def _run_vtracer_subprocess(src: str, out: str, params: dict | None = None) -> None:
     """
     Run vtracer inside a child process.
     A native crash in the Rust extension kills only the child — the caller
     receives a RuntimeError instead of the whole process dying silently.
     """
-    params = dict(
-        colormode="color",
-        hierarchical=_HIERARCHICAL,
-        mode=_MODE,
-        filter_speckle=_FILTER_SPECKLE,
-        color_precision=_COLOR_PRECISION,
-        layer_difference=_LAYER_DIFFERENCE,
-        corner_threshold=_CORNER_THRESHOLD,
-        length_threshold=_LENGTH_THRESHOLD,
-    )
+    p = dict(DEFAULT_PARAMS)
+    if params:
+        p.update(params)
     script = (
         "import vtracer, json\n"
-        f"p = json.loads({repr(json.dumps(params))})\n"
+        f"p = json.loads({repr(json.dumps(p))})\n"
         f"vtracer.convert_image_to_svg_py({repr(src)}, {repr(out)}, **p)\n"
     )
     result = subprocess.run(
@@ -104,6 +108,25 @@ def png_to_svg(input_png: str, output_svg: str) -> None:
         out_abs = str(Path(output_svg).resolve())
         print(f"      [vtracer] tracing {Path(src_abs).name} ...")
         _run_vtracer_subprocess(src_abs, out_abs)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    if not Path(output_svg).exists():
+        raise RuntimeError(f"vtracer finished but SVG not found at {output_svg}")
+
+
+def trace_with_params(input_png: str, output_svg: str, params: dict) -> None:
+    """Re-trace with explicit params dict (used by the vtracer agent optimizer)."""
+    tmp_path: str | None = None
+    try:
+        src, tmp_path = _prepare_image(input_png)
+        src_abs = str(Path(src).resolve())
+        out_abs = str(Path(output_svg).resolve())
+        _run_vtracer_subprocess(src_abs, out_abs, params)
     finally:
         if tmp_path:
             try:

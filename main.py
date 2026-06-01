@@ -56,6 +56,10 @@ def main() -> None:
         help="Use vtracer for PNG→SVG instead of Inkscape (overrides USE_VTRACER env)",
     )
     parser.add_argument(
+        "--use-vtracer-agent", action=argparse.BooleanOptionalAction, default=None,
+        help="After vtracer trace, run GPT-4o vision agent to optimize params (overrides USE_VTRACER_AGENT env)",
+    )
+    parser.add_argument(
         "--use-realesrgan", action=argparse.BooleanOptionalAction, default=None,
         help="Run Real-ESRGAN AI upscale after PIL upscale (overrides USE_REALESRGAN env)",
     )
@@ -90,11 +94,12 @@ def main() -> None:
     out_dir.mkdir(exist_ok=True)
     stem = img_path.stem
 
-    call_agent  = _resolve(args.call_agent,      "CALL_AGENT",     False)
-    use_vtracer = _resolve(args.use_vtracer,     "USE_VTRACER",    False)
-    use_esrgan  = _resolve(args.use_realesrgan,  "USE_REALESRGAN", False)
-    remove_bg   = _resolve(args.remove_bg,       "REMOVE_BG",      False)
-    use_sam2    = _resolve(args.use_sam2,        "USE_SAM2",       False)
+    call_agent        = _resolve(args.call_agent,         "CALL_AGENT",         False)
+    use_vtracer       = _resolve(args.use_vtracer,        "USE_VTRACER",        False)
+    use_vtracer_agent = _resolve(args.use_vtracer_agent,  "USE_VTRACER_AGENT",  False)
+    use_esrgan        = _resolve(args.use_realesrgan,     "USE_REALESRGAN",     False)
+    remove_bg         = _resolve(args.remove_bg,          "REMOVE_BG",          False)
+    use_sam2          = _resolve(args.use_sam2,           "USE_SAM2",           False)
     esrgan_tile = args.realesrgan_tile if args.realesrgan_tile is not None else int(os.getenv("REALESRGAN_TILE", "512"))
 
     # Pick PNG→SVG tracer (not used when SAM2 is on — masks are traced individually)
@@ -112,7 +117,8 @@ def main() -> None:
     total_steps = (3
                    + _esrgan_extra
                    + (1 if remove_bg else 0)
-                   + (1 if use_sam2 else 0))
+                   + (1 if use_sam2 else 0)
+                   + (1 if use_vtracer and use_vtracer_agent else 0))
     step = 0
 
     print(f"\n=== Vector Agent ===")
@@ -217,6 +223,13 @@ def main() -> None:
                 inkscape_png_to_svg(str(source_png), str(svg_path))
             else:
                 raise
+
+        if use_vtracer and use_vtracer_agent:
+            next_step("Optimizing vtracer params with GPT-4o vision agent...")
+            from pipeline.vtracer_agent import optimize
+            from pipeline.vtracer_convert import DEFAULT_PARAMS
+            optimize(str(source_png), str(svg_path), DEFAULT_PARAMS)
+
     print(f"      Saved: {svg_path.name}")
 
     # ── Step 5: SVG → EPS via Inkscape ────────────────────────────────────────
